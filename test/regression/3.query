@@ -1,0 +1,5 @@
+select count(1) from "custom_Main_Schema".contract_levels;
+ count 
+-------
+   313
+(1 row)

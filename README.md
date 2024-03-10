@@ -1,0 +1,138 @@
+# Que Pasa, the baby indexer for Tezos
+
+This repo contains the baby indexer, an indexer for dApps. It indexes only the contracts you want it to index. It reads the contract's storage definition and generates SQL DDL for a SQL representation of the tables, which it then populates.
+
+In short, Que Pasa translates the marketplace contract in:
+```
+rklomp@Monke que-pasa % cat HEN.yaml 
+contracts:
+- name: "hdao"
+  address: "KT1QxLqukyfohPV5kPkw97Rs6cw1DDDvYgbB"
+- name: "marketplace"
+  address: "KT1HbQepzV1nVGg8QVznG7z4RcHseD5kwqBn"
+```
+into a database schema with following tables:
+```
+tezos=# \dt "marketplace".*
+                List of relations
+   Schema    |       Name       | Type  |  Owner  
+-------------+------------------+-------+---------
+ marketplace | bigmap_clears    | table | quepasa
+ marketplace | storage          | table | quepasa
+ marketplace | storage.metadata | table | quepasa
+ marketplace | storage.swaps    | table | quepasa
+(4 rows)
+```
+And, for example, the table "storage" here has the following columns:
+```
+tezos=# \d "marketplace"."storage"
+                                           Table "marketplace.storage"
+    Column     |          Type          | Collation | Nullable |                     Default                     
+---------------+------------------------+-----------+----------+-------------------------------------------------
+ tx_context_id | bigint                 |           | not null | 
+ id            | bigint                 |           | not null | nextval('marketplace.storage_id_seq'::regclass)
+ counter       | numeric                |           |          | 
+ fee           | numeric                |           |          | 
+ manager       | character varying(127) |           |          | 
+ objkt         | character varying(127) |           |          | 
+```
+
+Currently the indexer works with PostgreSQL (we have been running with PostgreSQL 12 and 13).
+
+## Detailed overview
+
+The indexer stores data for only the contracts specified. Each contract's data is stored in its own schema. Cross-schema joins can be used to include results from several contracts.
+
+Every updated storage is inserted in its entirety (as a snapshot), with exception to Big map updates; each change is stored. This allows the indexer to be stateless (in other words, it doesn't care about what levels are processed in what order).
+
+For nearly all tables (including bigmap tables, excluding tables nested inside bigmaps) a `_live` table and a `_ordered` table is derived:
+- `_live` contains the current state.
+- `_ordered` for snapshots (non-bigmap) contains all snapshots in sequence of Tezos' execution order, and for changes (bigmaps) contains all updates in sequence of Tezos' execution order.
+
+Forks are automatically detected. When detected, indexed data belonging to the orphaned blocks is cleaned up. Make sure your backend does not expect the newest data to be immutable.
+
+Que Pasa additionally indexes the parameters of contract calls, into tables named `entry.<entrypoint>`.
+
+## Installation
+
+Make sure all dependencies are present on your machine:
+- Rust's build system `cargo` is required.
+
+Then clone our repository, and run `cargo install --path .` inside its root directory.
+
+Following subsections give exact installation command sequences for specific operating systems.
+
+### Linux and MacOS systems
+
+```
+curl https://sh.rustup.rs -sSf | sh;
+git clone git@github.com:tzConnectBerlin/que-pasa.git;
+cd que-pasa;
+cargo install --path .
+```
+
+## Usage
+
+Required settings:
+- Node URL
+- Database URL (for more info see "Database settings" section)
+- Which contracts to index (for more info see "Contracts settings" section)
+
+Once those have been set:
+1. First, an initial sync is required (processing of all relevant blocks up til now). This can be done by processing every block from head until contracts origination, though it will require fetching all blocks in this range (including blocks that are irrelevant to the setup). For the alternative fast sync see section "Fast sync".
+2. Now we're synced. Any subsequent runs will run in a continuous mode, where we wait for new blocks to arrive and process them when they do.
+
+### Database settings
+
+The database URL is set in the environment variable `DATABASE_URL` or passed under the `--database-url` CLI argument, like this:
+
+```
+PGUSER=..
+PGPASS=..
+PGDATABASE=..
+PGPORT=..
+PGHOST=..
+
+DATABASE_URL=postgres://$PGUSER:$PGPASS@$PGHOST:$PGPORT/$PGDATABASE
+```
+
+### Contracts Settings
+
+Specify for which contracts to run in a settings.yaml file:
+```
+contracts:
+- name: nft
+  address: KT1RJ6PbjHpwc3M5rw5s2Nbmefwbuwbdxton
+- name: marketplace
+  address: KT1HbQepzV1nVGg8QVznG7z4RcHseD5kwqBn
+```
+and set the `--contract-settings` CLI argument to point to the yaml file. Or alternatively/and additionally specify contracts through the `--contracts` CLI argument:
+```
+que-pasa \
+  .. \
+  --contracts \
+    nft=KT1RJ6PbjHpwc3M5rw5s2Nbmefwbuwbdxton \
+    marketplace=KT1HbQepzV1nVGg8QVznG7z4RcHseD5kwqBn \
+  ..
+```
+
+### Fast sync
+
+It is possible to only process the blocks relevant to the setup. For this to work it's necessary to ask from an external source in which blocks the setup contracts have been active. Currently the only external source supported is better-call.dev. If you wish to enable fast sync, provide the `--bcd-enable` flag when running Que Pasa for the first time (or when running for an additional contract for the first time).
+
+## Database structure
+
+### Tables
+The main table in each indexed contract's DB schema is `storage`; all other tables have a prefix which indicates where they are in the contract storage. For instance a map called `foo` in the main storage will live in a table called `storage.foo`, with a foreign key constraint, `storage_id` pointing back to the storage row which relates to it. Deeper levels of nesting will go on, and on.
+
+All tables have a `tx_context_id` field, which enables searching the database for its state at any time, while also making simple queries much more complicated. See the statements used for updating/repopulating the `_live` and `_ordered` tables in `sql/templates` for insights on how to create custom queries on the tables directly.
+
+Variant records come in two varieties. The simplest are those which are simply one or another `unit` types, with different annotations. These become text fields in the database. The other type are true variant records, they become subsidiary tables, as maps and big maps are, with a text field in the parent table indicating which form of the record is present.
+
+Big map updates are stored independently of the rest of the storage, as one would expect. Since we need to be able to look back at the history of the chain, there is a `deleted` flag which tells one whether the row has been removed (note: we don't update rows' deleted flag, we create a new row with deleted=true and value columns set to null). This means that if the most recent version of the map for the keys you specify has this deleted flag set, those keys in this bigmap are no longer alive/present.
+
+# Limitations
+
+- We're (currently) not indexing: tickets, sapling states, lambda values. If they are present in an indexed contract, they're ignored. In other words, values of these types will not arrive in the db.
+- Generated table names can become quite long. Some contracts may be impeded by name length limitations of the underlying database system. For example, PostgreSQL's default setup only allows table names of up to 63 characters.
+- The latest release (1.2.6, corresponding to the current main branch) does not support loading of additional contracts while que pasa continues to maintain updated indexing of existing setup, but there is a WIP version that is ready for usage in this branch: https://github.com/tzConnectBerlin/que-pasa/tree/dynamic-contract-loading (also deployed to our docker registry with tag 1.3.0). That Que Pasa version has a new argument `--add-contract`, which will start Que Pasa in a special "cli" mode that wont start indexing anything. Instead all it does is notify the active Que Pasa to start indexing this additional contract (first it will historically index this and then it will add it to the active head level indexer).

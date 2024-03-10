@@ -1,0 +1,36 @@
+[
+    (
+        table_name: "storage",
+        id: 26,
+        fk_id: None,
+        columns: [
+            (
+                name: "tx_context_id",
+                value: BigInt(25),
+            ),
+            (
+                name: "lambda_repository_creator",
+                value: String("tz1VSUr8wwNhLAzempoch5d6hLRiTh8Cjcjb"),
+            ),
+        ],
+    ),
+    (
+        table_name: "storage.lambda_map",
+        id: 32,
+        fk_id: None,
+        columns: [
+            (
+                name: "tx_context_id",
+                value: BigInt(25),
+            ),
+            (
+                name: "idx_lambda_repository_string",
+                value: String("auction_withdraw_endpoint"),
+            ),
+            (
+                name: "bigmap_id",
+                value: Int(90982),
+            ),
+        ],
+    ),
+]

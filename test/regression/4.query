@@ -1,0 +1,5 @@
+select count(1) from "custom_Main_Schema".contract_deps;
+ count 
+-------
+     1
+(1 row)

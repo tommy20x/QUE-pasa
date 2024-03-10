@@ -1,0 +1,5 @@
+select nat from "KT1M8asPmVQhFG6yujzttGonznkghocEkbFk"."entry.deposit";
+       nat        
+------------------
+ 2516626800000000
+(1 row)
